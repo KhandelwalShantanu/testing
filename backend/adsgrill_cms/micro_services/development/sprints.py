@@ -15,6 +15,8 @@ import openpyxl
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
 from datetime import datetime, time
+from django.db.models import Sum
+
 
 class CsrfExemptSessionAuthentication(SessionAuthentication):
     def enforce_csrf(self, request):
@@ -31,16 +33,16 @@ class SprintView(CsrfExemptMixin, APIView):
             start_date_str = request.data.get('start_date')
             end_date_str = request.data.get('end_date')
 
-            if Sprint.objects.filter(name=request.data.get('name')).exists():
+            if Sprint.objects.filter(project__pk=requestData.get('project_id'), name=request.data.get('name')).exists():
                     return JsonResponse({'message':'Sprint with this name already exists'})
                 
             if start_date_str:
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d %H:%M:%S')
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%dT%H:%M')
             else:
                 start_date = None
             
             if end_date_str:
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d %H:%M:%S')
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%dT%H:%M')
             else:
                 end_date = None
             project_instance = Project.objects.get(pk=requestData.get('project_id'))
@@ -179,20 +181,28 @@ class SprintView(CsrfExemptMixin, APIView):
             exp_duration = request.data.get('exp_duration')
             start_date_str = request.data.get('start_date')
             end_date_str = request.data.get('end_date')
-    
             upd_sprint = Sprint.objects.get(pk=requestData.get('id'))
+
+            if Sprint.objects.filter(project__pk=requestData.get('project_id'), name=request.data.get('name')).exists():
+                return JsonResponse({'message':'Sprint with this name already exists'})
     
             if start_date_str:
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d %H:%M:%S')
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%dT%H:%M')
             else:
                 start_date = None
     
             if end_date_str:
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d %H:%M:%S')
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%dT%H:%M')
             else:
                 end_date = None
     
             reporter_instance = Users.objects.get(pk=requestData.get("reporter_id"))
+            
+            if(request.user.designation=="project_manager" and request.user.role.name=="development"):
+                if requestData.get("status")=="done":
+                   total_org_duration=Issue.objects.filter(sprint=upd_sprint).aggregate(Sum('org_duration'))['org_duration__sum']
+                   upd_sprint.org_duration=total_org_duration
+                   upd_sprint.is_started=False
     
             with transaction.atomic():
                 upd_sprint.reporter = reporter_instance

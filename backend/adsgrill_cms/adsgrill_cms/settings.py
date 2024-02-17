@@ -84,7 +84,7 @@ CORS_ALLOW_HEADERS = [
     'origin',
     'user-agent',
 ]
-CORS_EXPOSE_HEADERS = ['token']
+CORS_EXPOSE_HEADERS = ['token', 'content-disposition']
 
 ROOT_URLCONF = 'adsgrill_cms.urls'
 
@@ -122,7 +122,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'adsgrill_cms',
         'USER': 'postgres',
-        'PASSWORD': '1911',
+        'PASSWORD': '1234',
         'HOST': 'localhost',
         'PORT': '5432', 
     }
@@ -201,3 +201,4 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 SESSION_COOKIE_AGE = 3600 * 24
 SESSION_SAVE_EVERY_REQUEST = False
 
+TIME_ZONE='Asia/Kolkata'

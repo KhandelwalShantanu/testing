@@ -1,4 +1,4 @@
-from app.models import Project, Users, Client, Sprint
+from app.models import Project, Users, Client, Sprint, Issue
 from rest_framework.views import APIView
 from django.utils import timezone
 import os
@@ -7,7 +7,7 @@ from django.http import JsonResponse
 import json
 from django.db import transaction
 from django.db.utils import IntegrityError
-from django.db.models import ObjectDoesNotExist
+from django.db.models import ObjectDoesNotExist, Count, Sum, Case, When, F, Value, IntegerField
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
 from django.core.files.storage import default_storage
@@ -97,32 +97,72 @@ class ProjectView(CsrfExemptMixin, APIView):
     
     def get(self, request):
         try:
-            all_projects = Project.objects.all().order_by('-created_at')
-            res_data = [{
-                "id": project.pk,
-                "reporter": {
-                    'id': project.reporter.pk if project.reporter else None,
-                    'name': project.reporter.name if project.reporter else None
-                },
-                "team_lead": {
-                    'id': project.team_lead.pk if project.team_lead else None,
-                    'name': project.team_lead.name if project.team_lead else None
-                },
-                "client": {
-                    'id': project.client.pk if project.client else None,
-                    'name': project.client.name if project.client else None
-                },
-                "name": project.name,
-                "key": project.key,
-                "type": project.type,
-                "status": project.status,
-                "attachments": project.attachments,
-                "progress": project.progress,
-                "team_members": project.team_members,
-                "host_address": project.host_address,
-                "tech_stacks": project.tech_stacks,
-                "created_at": project.created_at,
-            }for project in all_projects]
+            val = request.GET.get('key')
+            res_data = []
+            if val == 'development':
+                all_projects = Project.objects.annotate(total_issues=Count('issue'), done_issues = Sum(Case(When(issue__status='done', then=1), default=Value(0), output_field=IntegerField()))).order_by('-created_at')
+                for project in all_projects:
+                    project_data = {
+                        "id": project.pk,
+                        "reporter": {
+                            'id': project.reporter.pk if project.reporter else None,
+                            'name': project.reporter.name if project.reporter else None
+                        },
+                        "team_lead": {
+                            'id': project.team_lead.pk if project.team_lead else None,
+                            'name': project.team_lead.name if project.team_lead else None
+                        },
+                        "client": {
+                            'id': project.client.pk if project.client else None,
+                            'name': project.client.name if project.client else None
+                        },
+                        "name": project.name,
+                        "key": project.key,
+                        "type": project.type,
+                        "status": project.status,
+                        "attachments": project.attachments,
+                        "progress": int((project.done_issues*100) / project.total_issues) if project.total_issues > 0 else int(0),
+                        "team_members": ", ".join(project.issue_set.values_list('assignee__name', flat=True).distinct()),
+                        "host_address": project.host_address,
+                        "tech_stacks": project.tech_stacks,
+                        "created_at": project.created_at,
+                    }
+                    print('issues of projects', project.issue_set.values_list('assignee', flat=True))
+                    res_data.append(project_data)
+            if val == 'client':
+                clientID = request.GET.get('clientID')
+                if not clientID:
+                    return JsonResponse({'messgae':'Request parameter missing(clientID)'}, status=status.HTTP_400_BAD_REQUEST)
+                client_all_projects = Project.objects.annotate(total_sprints=Count('sprint'), done_sprints=Sum(Case(When(sprint__status='done', then=1),default=Value(0), output_field=IntegerField()))).filter(client_id=clientID).order_by('-created_at')
+                for project in client_all_projects:
+                    sprints = Sprint.objects.filter(project_id = project.pk).order_by('-created_at')
+                    project_data = {
+                        "id": project.pk,
+                        "reporter": {
+                            'id': project.reporter.pk if project.reporter else None,
+                            'name': project.reporter.name if project.reporter else None
+                        },
+                        "name": project.name,
+                        "type": project.type,
+                        "status": project.status,
+                        "attachments": project.attachments,
+                        "progress":int((project.done_sprints*100) / project.total_sprints) if project.total_sprints > 0 else int(0),
+                        "host_address": project.host_address,
+                        "tech_stacks": project.tech_stacks,
+                        "created_at": project.created_at,
+                        "sprints":[{
+                            'id':sprint.pk,
+                            'name':sprint.name,
+                            'key':sprint.key,
+                            'status':sprint.status,
+                            'is_started':sprint.is_started,
+                            'start_date':sprint.start_date
+                            }for sprint in sprints]
+                    }
+                    res_data.append(project_data)
+
+        except Project.DoesNotExist:
+            return JsonResponse({'message':"No projects found"}, status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
             return JsonResponse({'message':str(e)})
         return JsonResponse({'projects':res_data}, status=status.HTTP_200_OK)
@@ -143,7 +183,6 @@ class ProjectView(CsrfExemptMixin, APIView):
                 upd_project.key = req_data.get('key')
                 upd_project.type = req_data.get('type')
                 upd_project.status = req_data.get('status', 'to_do')  
-                upd_project.team_members = req_data.get('team_members')
                 upd_project.host_address = req_data.get('host_address')
                 upd_project.tech_stacks = req_data.get('tech_stacks')
                 attachment_file_names = []
@@ -199,8 +238,6 @@ class ProjectView(CsrfExemptMixin, APIView):
         except ObjectDoesNotExist:
             return JsonResponse({'message':'Requested Project Does Not Exists'}, status=status.HTTP_204_NO_CONTENT)        
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             return JsonResponse({'message':str(e)})
         
         return JsonResponse({'message':'Project Deleted Successfully'}, status=status.HTTP_404_NOT_FOUND)
@@ -213,19 +250,23 @@ class DownloadProjectAttchments(CsrfExemptMixin, APIView):
             id=request.GET.get("id")
             project_instance=Project.objects.get(pk=id)
             files=project_instance.attachments
-            
-            zip_buffer=BytesIO()
-            with zipfile.ZipFile(zip_buffer,'w') as pro_zip:
-                for file in files:
-                    file_name = file.split("\\")[-1]
-                    pro_zip.write(file, file_name)
-            response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
-            response['Content-Disposition'] = f'attachment; filename={project_instance.name}_attachments.zip'
-            
-            return response
-            
+            if files:
+                zip_buffer=BytesIO()
+                with zipfile.ZipFile(zip_buffer,'w') as pro_zip:
+                    for file in files:
+                        file_name = file.split("\\")[-1]
+                        pro_zip.write(file, file_name)
+                response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
+                response['Content-Disposition'] = f'attachment; filename={project_instance.name}_attachments.zip'
+            else:
+                response = JsonResponse({"message":"No files found for the specified criteria."}, status=status.HTTP_204_NO_CONTENT)
+           
+        except IntegrityError as i:
+            response =  JsonResponse({"message":str(i)})
+
         except Exception as e:
-            return JsonResponse({"message":str(e)})
+            response =  JsonResponse({"message":str(e)})
+        return response
     
 
 class GetProjectManagers(CsrfExemptMixin, APIView):
@@ -233,28 +274,44 @@ class GetProjectManagers(CsrfExemptMixin, APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         try:
-            all_lead_man = Users.objects.filter(role__name='Development', designation='Product Manager', is_deleted=False).order_by("-created_at")
+            all_lead_man = Users.objects.filter(role__name='development', designation='project_manager', is_deleted=False).order_by("-created_at")
             res_data = [{
                 "id":lead_man.pk,
                 "name":lead_man.name
             }for lead_man in all_lead_man]
         except Exception as e:
             return JsonResponse({'message':str(e)})
-        return JsonResponse({'lead_man':res_data}, status=status.HTTP_200_OK)
+        return JsonResponse({'project_managers':res_data}, status=status.HTTP_200_OK)
     
 class GetAllAssignees(CsrfExemptMixin, APIView):
     authentication_classes = [CsrfExemptSessionAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
     def get(self, request):
         try:
-            all_assignees = Users.objects.filter(Q(designation__icontains='developer'), role__name='Development')
+            all_assignees = Users.objects.filter(Q(designation__icontains='developer'), role__name='development')
             res_data = [{
                 'id':assignee.pk,
                 'name': assignee.name
             } for assignee in all_assignees]
         except Exception as e:
             return JsonResponse({'message':str(e)})
-        return JsonResponse({'Assignees':res_data}, status=status.HTTP_200_OK)
+        return JsonResponse({'assignees':res_data}, status=status.HTTP_200_OK)
+    
+class GetAllTeamLeaders(CsrfExemptMixin, APIView):
+    authentication_classes = [CsrfExemptSessionAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            all_team_leaders = Users.objects.filter(Q(designation__icontains='team_lead'), role__name='development')
+            res_data = [{
+                'id':team_leader.pk,
+                'name': team_leader.name
+            } for team_leader in all_team_leaders]
+        except Exception as e:
+            return JsonResponse({'message':str(e)})
+        return JsonResponse({'team_leaders':res_data}, status=status.HTTP_200_OK)
+        
 
 
 
